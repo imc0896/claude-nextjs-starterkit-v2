@@ -11,7 +11,7 @@ allowed-tools:
 
 # Claude 명령어: Add Component
 
-`src/components/` 폴더에 TypeScript + Tailwind CSS 기반 React 함수형 컴포넌트를 생성합니다.
+`components/` 폴더에 TypeScript + Tailwind CSS 기반 React 함수형 컴포넌트를 생성합니다.
 
 ## 입력
 
@@ -21,7 +21,7 @@ allowed-tools:
 
 1. `$1`이 PascalCase가 아니면 PascalCase로 변환 (예: `user-profile` → `UserProfile`)
 2. 파일명은 컴포넌트 이름을 kebab-case로 변환하여 사용 (예: `UserProfile` → `user-profile.tsx`)
-3. `src/components/` 폴더에 동일한 파일이 이미 존재하는지 확인
+3. `components/` 폴더에 동일한 파일이 이미 존재하는지 확인
 4. 존재하면 사용자에게 알리고 중단
 5. 존재하지 않으면 아래 템플릿으로 파일 생성
 

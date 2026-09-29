@@ -30,6 +30,14 @@
         "shadcn@latest",
         "mcp"
       ]
+    },
+    "hiworks-mail-mcp": {
+      "command": "node",
+      "args": ["mcp-servers/hiworks-mail/index.mjs"],
+      "env": {
+        "HIWORKS_USERNAME": "${HIWORKS_USERNAME}",
+        "HIWORKS_PASSWORD": "${HIWORKS_PASSWORD}"
+      }
     }
   }
 }

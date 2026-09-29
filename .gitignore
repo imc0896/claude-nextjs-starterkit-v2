@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 하이웍스 MCP 첨부파일 저장 폴더
+/downloads

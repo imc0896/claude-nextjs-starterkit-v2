@@ -9,6 +9,8 @@
  * - read_username 응답에서 password 제거
  * - read_email: STAT 응답 파싱 버그 수정, 메일 미발견 시 에러 반환, 첨부파일 목록 추가
  * - save_attachment 도구 추가 (첨부파일 로컬 저장)
+ * - read_email에 includeHtml 옵션 추가 (false면 html 원문 제외)
+ * - search_email: query 필터 실제 적용, 1번 메일 누락 버그 수정, 오류 시에도 POP3 QUIT 보장
  * - 날짜 표기를 KST 오프셋(+09:00)으로 수정 (원본은 KST 시각에 Z를 붙임)
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -22,7 +24,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const SERVER_NAME = 'hiworks-mail-mcp';
-const SERVER_VERSION = '1.0.12-local.2';
+const SERVER_VERSION = '1.0.12-local.3';
 
 const POP3_CONFIG = { host: 'pop3s.hiworks.com', port: 995, tls: true };
 const SMTP_CONFIG = { host: 'smtps.hiworks.com', port: 465, secure: true };
@@ -141,29 +143,47 @@ function pickLatestMessageNumbers(messageList, limit) {
   if (messageList.length === 0) return [];
   const startIndex = Math.min(messageList.length, Number(messageList[messageList.length - 1][0]));
   const result = [];
-  for (let i = startIndex; i > Math.max(1, startIndex - limit); i--) {
+  // 원본은 i > max(1, ...) 조건이라 1번 메일이 항상 누락되었음
+  for (let i = startIndex; i >= Math.max(1, startIndex - limit + 1); i--) {
     if (messageList.some(([num]) => Number(num) === i)) result.push(i);
   }
   return result;
 }
 
 /**
- * 최신 메일 헤더 목록을 조회한다.
- * @param {number} limit 최대 개수
+ * 메일 요약이 검색어를 포함하는지 확인한다. (제목/보낸사람/받는사람, 대소문자 무시)
+ * @param {{ subject: string, from: string, to: string }} email 메일 요약
+ * @param {string | undefined} query 검색어 (비어 있으면 항상 true)
+ * @returns {boolean}
  */
-async function fetchLatestEmails(limit) {
+function matchesQuery(email, query) {
+  const keyword = query?.trim().toLowerCase();
+  if (!keyword) return true;
+  return [email.subject, email.from, email.to].some((field) => field.toLowerCase().includes(keyword));
+}
+
+/**
+ * 최신 메일 헤더 목록을 조회한다. limit은 조회 범위(최근 N건)이며, query는 그 범위 안에서 필터링한다.
+ * @param {number} limit 조회할 최근 메일 수
+ * @param {string} [query] 제목/보낸사람/받는사람 검색어
+ */
+async function fetchLatestEmails(limit, query) {
   const client = createPop3Client();
-  const messageList = await client.LIST();
   const emails = [];
-  for (const msgNum of pickLatestMessageNumbers(messageList, limit)) {
-    try {
-      const parsed = await simpleParser(await client.TOP(msgNum, 0));
-      emails.push(toEmailSummary(parsed, msgNum));
-    } catch (err) {
-      log(`Error processing message ${msgNum}:`, err);
+  try {
+    const messageList = await client.LIST();
+    for (const msgNum of pickLatestMessageNumbers(messageList, limit)) {
+      try {
+        const summary = toEmailSummary(await simpleParser(await client.TOP(msgNum, 0)), msgNum);
+        if (matchesQuery(summary, query)) emails.push(summary);
+      } catch (err) {
+        log(`Error processing message ${msgNum}:`, err);
+      }
     }
+  } finally {
+    // 오류가 나도 POP3 세션을 반드시 종료
+    await client.QUIT().catch((err) => log('POP3 QUIT failed:', err));
   }
-  await client.QUIT();
   return emails.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 }
 
@@ -210,13 +230,14 @@ async function fetchParsedEmail(messageId) {
 /**
  * messageId(또는 메시지 번호)로 메일 본문과 첨부파일 목록을 가져온다.
  * @param {string} messageId Message-ID 또는 POP3 메시지 번호
+ * @param {boolean} [includeHtml] false면 html 원문을 응답에서 제외 (토큰 절약)
  */
-async function findEmail(messageId) {
+async function findEmail(messageId, includeHtml = true) {
   const { parsed, msgNum } = await fetchParsedEmail(messageId);
   return {
     ...toEmailSummary(parsed, msgNum),
     content: parsed.text || '',
-    html: parsed.html || undefined,
+    html: (includeHtml && parsed.html) || undefined,
     attachments: toAttachmentList(parsed),
   };
 }
@@ -315,11 +336,13 @@ function createServer() {
   server.registerTool('read_username', { description: '설정된 하이웍스 계정(username)을 확인합니다.', inputSchema: {} },
     safeTool(async () => ({ username: getCredentials().username })));
   server.registerTool('search_email', {
-    description: '하이웍스 이메일을 검색합니다. (최신순)',
+    description: '하이웍스 이메일을 검색합니다. (최신순) limit: 조회할 최근 메일 수(기본 100), query: 제목/보낸사람/받는사람 포함 검색어(대소문자 무시, 생략 시 전체).',
     inputSchema: { query: z.string().optional(), limit: z.number().optional() },
-  }, safeTool(async ({ limit = DEFAULT_SEARCH_LIMIT }) => ({ emails: await fetchLatestEmails(limit) }), { emails: [] }));
-  server.registerTool('read_email', { description: '하이웍스 이메일을 읽어옵니다.', inputSchema: { messageId: z.string() } },
-    safeTool(async ({ messageId }) => ({ email: await findEmail(messageId) })));
+  }, safeTool(async ({ limit = DEFAULT_SEARCH_LIMIT, query }) => ({ emails: await fetchLatestEmails(limit, query) }), { emails: [] }));
+  server.registerTool('read_email', {
+    description: '하이웍스 이메일을 읽어옵니다. includeHtml=false면 html 원문을 제외하고 텍스트 본문만 반환합니다.',
+    inputSchema: { messageId: z.string(), includeHtml: z.boolean().optional() },
+  }, safeTool(async ({ messageId, includeHtml }) => ({ email: await findEmail(messageId, includeHtml) })));
   server.registerTool('save_attachment', {
     description: '하이웍스 메일의 첨부파일을 로컬 폴더(기본: downloads/hiworks)에 저장합니다. filename 생략 시 전체 저장.',
     inputSchema: { messageId: z.string(), filename: z.string().optional() },
